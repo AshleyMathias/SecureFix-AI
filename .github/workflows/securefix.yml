@@ -1,0 +1,158 @@
+name: SecureFix AI — Vulnerability Scan & Patch
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    # Run at 02:00 UTC every day
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      repo_url:
+        description: "Target repository URL (defaults to current repo)"
+        required: false
+        type: string
+      base_branch:
+        description: "Base branch for the security patch PR"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  security-events: write
+
+env:
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  # ── Job 1: Lint & unit tests ─────────────────────────────────────────────────
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run unit tests
+        run: pytest tests/ -v --tb=short -q
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+
+  # ── Job 2: Vulnerability scan ─────────────────────────────────────────────────
+  vulnerability-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.event_name != 'pull_request'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Set up Node.js (for npm audit)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install SecureFix dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install security scanners
+        run: |
+          pip install pip-audit safety
+          npm install -g npm@latest
+
+      - name: Determine target repository
+        id: target
+        run: |
+          if [ -n "${{ github.event.inputs.repo_url }}" ]; then
+            echo "repo_url=${{ github.event.inputs.repo_url }}" >> $GITHUB_OUTPUT
+          else
+            echo "repo_url=https://github.com/${{ github.repository }}" >> $GITHUB_OUTPUT
+          fi
+          echo "base_branch=${{ github.event.inputs.base_branch || 'main' }}" >> $GITHUB_OUTPUT
+
+      - name: Run SecureFix AI
+        run: |
+          python -c "
+          import asyncio, sys
+          sys.path.insert(0, '.')
+          from workflows.vulnerability_fix_flow import VulnerabilityFixFlow
+
+          async def main():
+              flow = VulnerabilityFixFlow()
+              result = await flow.run_for_repository(
+                  repo_url='${{ steps.target.outputs.repo_url }}',
+                  base_branch='${{ steps.target.outputs.base_branch }}',
+                  triggered_by='github_actions',
+              )
+              print(f'Status: {result.status}')
+              print(f'Vulnerabilities: {result.vulnerability_count}')
+              print(f'Patched: {result.patched_count}')
+              if result.pr_url:
+                  print(f'PR: {result.pr_url}')
+              if result.error_message:
+                  print(f'Error: {result.error_message}', file=sys.stderr)
+
+          asyncio.run(main())
+          "
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER || 'openai' }}
+          ENVIRONMENT: production
+          LOG_FORMAT: json
+
+      - name: Upload scan logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: securefix-scan-logs-${{ github.run_id }}
+          path: /tmp/securefix_repos/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  # ── Job 3: Docker build (on main branch) ─────────────────────────────────────
+  docker-build:
+    name: Docker Build
+    runs-on: ubuntu-latest
+    needs: test
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: false
+          tags: securefix-ai:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

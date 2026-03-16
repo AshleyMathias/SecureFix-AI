@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  securefix-ai:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: securefix-ai:latest
+    container_name: securefix-ai
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - ENVIRONMENT=production
+      - LOG_FORMAT=json
+      - LOG_LEVEL=INFO
+      # Required — inject via .env or Docker secrets
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Optional
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - LLM_PROVIDER=${LLM_PROVIDER:-openai}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - REPO_CLONE_BASE_DIR=/tmp/securefix_repos
+    volumes:
+      - /tmp/securefix_repos:/tmp/securefix_repos
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
