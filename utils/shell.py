@@ -4,6 +4,7 @@ import asyncio
 import re
 import shlex
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -12,8 +13,10 @@ from utils.logger import get_logger
 
 logger = get_logger("securefix.shell")
 
-# Characters that must not appear in shell tokens passed to subprocess
-_INJECTION_PATTERN = re.compile(r"[;&|`$><\\\n]")
+# Characters that must not appear in shell tokens passed to subprocess.
+# Backslash is allowed so Windows paths (e.g. C:\path\to\repo) pass; we never
+# use shell=True so backslash is not interpreted by a shell.
+_INJECTION_PATTERN = re.compile(r"[;&|`$><\n]")
 
 # Absolute allow-list of executables SecureFix may invoke
 _ALLOWED_EXECUTABLES = frozenset(
@@ -72,7 +75,8 @@ def _validate_command(args: List[str]) -> None:
     if not args:
         raise ValueError("Empty command list")
 
-    executable = Path(args[0]).name
+    # Use stem so "python.exe" / "pip-audit.exe" match "python" / "pip-audit"
+    executable = Path(args[0]).stem
     if executable not in _ALLOWED_EXECUTABLES:
         raise ValueError(
             f"Executable '{executable}' is not in the SecureFix allow-list. "
@@ -165,7 +169,8 @@ async def run_command_async(
 ) -> CommandResult:
     """
     Asynchronously run a subprocess with security validation.
-    Non-blocking: uses asyncio.create_subprocess_exec.
+    On Windows, uses run_command in a thread (subprocess.run) to avoid
+    asyncio subprocess support issues. On Unix, uses asyncio.create_subprocess_exec.
     """
     _validate_command(args)
 
@@ -174,6 +179,19 @@ async def run_command_async(
     merged_env = {**os.environ, **(env or {})}
 
     logger.debug("running_command_async", command=args, cwd=cwd)
+
+    # On Windows, asyncio.create_subprocess_exec can raise NotImplementedError
+    # when the event loop doesn't support subprocesses. Use sync subprocess.run
+    # in a thread instead so scanners work regardless of loop policy.
+    if sys.platform == "win32":
+        return await asyncio.to_thread(
+            run_command,
+            args,
+            cwd=cwd,
+            timeout=timeout,
+            env=env,
+            check=False,
+        )
 
     timed_out = False
     try:
@@ -198,7 +216,13 @@ async def run_command_async(
         stdout = stdout_bytes.decode(errors="replace")
         stderr = stderr_bytes.decode(errors="replace")
     except Exception as exc:
-        logger.error("command_exec_error", command=args, error=str(exc))
+        err_msg = str(exc) or getattr(exc, "winerror", None) or repr(exc.args)
+        logger.error(
+            "command_exec_error",
+            command=args,
+            error=err_msg,
+            exc_type=type(exc).__name__,
+        )
         raise
 
     return CommandResult(

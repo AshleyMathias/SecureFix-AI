@@ -7,6 +7,8 @@ from typing import Any, Dict, Optional
 import structlog
 from structlog.types import EventDict, Processor
 
+from utils.log_buffer import _buffer_processor
+
 
 def _add_severity_field(
     logger: Any, method: str, event_dict: EventDict
@@ -25,6 +27,71 @@ def _drop_color_message_key(
     return event_dict
 
 
+def _add_readable_message(
+    logger: Any, method: str, event_dict: EventDict
+) -> EventDict:
+    """Add a short human-readable 'message' so logs are easy to follow without losing data."""
+    event = event_dict.get("event", "")
+    run_id = (event_dict.get("run_id") or "")[:8]
+    err = event_dict.get("error") or event_dict.get("error_message") or ""
+    if err and len(err) > 200:
+        err = err[:197] + "..."
+
+    # Templates use {key} and are filled from event_dict; use run_id_short for brevity
+    d = dict(event_dict)
+    d["run_id_short"] = run_id
+    d["error_short"] = err
+
+    _templates: Dict[str, str] = {
+        "webhook_received": "Webhook: {event_type} for {repository}",
+        "workflow_dispatched": "Dispatching workflow for {repo} (event: {webhook_event})",
+        "workflow_dispatched_issue": "Dispatching workflow for {repo} (issue #{issue_number}: {issue_title})",
+        "securefix_ai_starting": "SecureFix AI starting (v{version}, {environment})",
+        "securefix_ai_shutting_down": "SecureFix AI shutting down",
+        "orchestrator_initialized": "Orchestrator ready (LLM: {llm_provider}/{llm_model})",
+        "securefix_agent_ready": "Agent ready",
+        "agent_run_starting": "Run {run_id_short}: starting for {repo_url}",
+        "node_initialize": "Run {run_id_short}: initializing (cloning repo)",
+        "cloning_repository": "Cloning repo → {dest}",
+        "clone_complete": "Clone done: {path}",
+        "clone_failed": "Clone failed: {error_short}",
+        "node_detect": "Run {run_id_short}: scanning for vulnerabilities",
+        "scan_all_starting": "Run {run_id_short}: running scanners {scanners}",
+        "scan_all_complete": "Scan done: {total} vulns ({critical} critical, {high} high)",
+        "detection_complete": "Run {run_id_short}: detection done ({total} vulns, {patchable} patchable)",
+        "detect_skipped_no_repo_path": "Run {run_id_short}: scan skipped (no clone path)",
+        "workflow_aborted": "Run {run_id_short}: aborted — {error_short}",
+        "workflow_completed": "Run {run_id_short}: completed (status={status}, pr={pr_url})",
+        "agent_run_complete": "Run complete: status={status}, vulns={vuln_count}, pr={pr_url}",
+        "background_workflow_done": "Background run done: {status}",
+        "webhook_event_ignored": "Webhook ignored (event: {webhook_event})",
+        "issue_event_ignored": "Issue event ignored (action: {action})",
+        "push_not_on_default_branch": "Push ignored (not default branch)",
+        "routing_no_vulnerabilities": "No vulnerabilities → completing",
+        "pull_request_created": "PR created: #{pr_number} {pr_url}",
+        "repo_cleanup_complete": "Cleanup: removed clone at {path}",
+    }
+
+    # For workflow_dispatched with issue context, use issue-specific message
+    if event == "workflow_dispatched" and d.get("issue_number") is not None and d.get("issue_title") is not None:
+        event_dict["message"] = _templates["workflow_dispatched_issue"].format(
+            **{k: v if isinstance(v, (str, int, float, type(None))) else str(v) for k, v in d.items()}
+        )
+        return event_dict
+
+    template = _templates.get(event)
+    if template:
+        try:
+            # Coerce values to str so list/dict don't break format
+            safe = {k: v if isinstance(v, (str, int, float, type(None))) else str(v) for k, v in d.items()}
+            event_dict["message"] = template.format(**safe)
+        except (KeyError, TypeError):
+            event_dict["message"] = event
+    else:
+        event_dict["message"] = event
+    return event_dict
+
+
 def configure_logging(log_level: str = "INFO", log_format: str = "json") -> None:
     """
     Configure structlog with either JSON (production) or human-readable (dev) output.
@@ -39,6 +106,8 @@ def configure_logging(log_level: str = "INFO", log_format: str = "json") -> None
         structlog.processors.StackInfoRenderer(),
         _add_severity_field,
         _drop_color_message_key,
+        _add_readable_message,
+        _buffer_processor,
     ]
 
     if log_format == "json":

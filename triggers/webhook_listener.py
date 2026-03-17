@@ -4,15 +4,24 @@ import asyncio
 import hashlib
 import hmac
 import json
+import sys
 from contextlib import asynccontextmanager
 from typing import Any, Dict, Optional
 
 import structlog
-from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 
+# On Windows, asyncio subprocesses require ProactorEventLoop (SelectorEventLoop raises NotImplementedError).
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+from pathlib import Path
+
+from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
+from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel, Field
+
+from services.repository_service import _validate_github_url
 from utils.config import get_settings
+from utils.log_buffer import get_recent_logs
 from utils.logger import configure_logging, get_logger, EventLogger
 from workflows.vulnerability_fix_flow import VulnerabilityFixFlow, WorkflowResult
 
@@ -143,6 +152,7 @@ async def github_webhook(
     - repository_vulnerability_alert
     - workflow_run
     - schedule (via GitHub Actions)
+    - issues (action: opened only)
     """
     body = await request.body()
     _verify_github_signature(body, x_hub_signature_256)
@@ -170,10 +180,11 @@ async def github_webhook(
         "repository_vulnerability_alert",
         "workflow_run",
         "schedule",
+        "issues",
     }
 
     if event_type not in handled_events:
-        logger.debug("webhook_event_ignored", event=event_type)
+        logger.debug("webhook_event_ignored", webhook_event=event_type)
         return JSONResponse(
             content={"status": "ignored", "event": event_type},
             status_code=status.HTTP_200_OK,
@@ -200,6 +211,20 @@ async def github_webhook(
                 status_code=status.HTTP_200_OK,
             )
 
+    # For issues events, only trigger when an issue is opened (not closed, edited, etc.)
+    if event_type == "issues":
+        action = payload.get("action", "")
+        if action != "opened":
+            logger.debug(
+                "issue_event_ignored",
+                webhook_event=event_type,
+                action=action,
+            )
+            return JSONResponse(
+                content={"status": "ignored", "reason": f"issues action '{action}' not handled"},
+                status_code=status.HTTP_200_OK,
+            )
+
     # Dispatch to background task immediately (respond fast to GitHub)
     background_tasks.add_task(
         _run_workflow_background,
@@ -209,12 +234,16 @@ async def github_webhook(
         delivery_id=delivery_id,
     )
 
-    logger.info(
-        "workflow_dispatched",
-        event=event_type,
-        repo=repo_name,
-        delivery_id=delivery_id,
-    )
+    log_kw: Dict[str, Any] = {
+        "webhook_event": event_type,
+        "repo": repo_name,
+        "delivery_id": delivery_id,
+    }
+    if event_type == "issues":
+        issue = payload.get("issue", {})
+        log_kw["issue_number"] = issue.get("number")
+        log_kw["issue_title"] = (issue.get("title") or "")[:80]
+    logger.info("workflow_dispatched", **log_kw)
 
     return JSONResponse(
         content={
@@ -227,8 +256,12 @@ async def github_webhook(
 
 
 class ManualScanRequest(BaseModel):
-    repo_url: str
-    base_branch: str = "main"
+    repo_url: str = Field(
+        ...,
+        example="https://github.com/owner/repo",
+        description="HTTPS URL of the GitHub repository to scan (e.g. https://github.com/owner/repo)",
+    )
+    base_branch: str = Field(default="main", description="Branch to base the security patch PR on")
 
 
 @app.post(
@@ -245,6 +278,14 @@ async def manual_scan(
     Manually trigger a vulnerability scan for a given repository.
     Useful for testing and CLI-based invocations.
     """
+    try:
+        _validate_github_url(request.repo_url)
+    except ValueError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Invalid repository URL: {e}. Use an HTTPS GitHub URL, e.g. https://github.com/owner/repo",
+        ) from e
+
     import uuid
     run_id = str(uuid.uuid4())
 
@@ -295,5 +336,46 @@ async def root() -> JSONResponse:
             "name": "SecureFix AI",
             "version": settings.app_version,
             "docs": "/docs",
+            "dashboard": "/dashboard",
         }
     )
+
+
+@app.get(
+    "/api/recent-logs",
+    summary="Recent log events (dashboard)",
+    tags=["Dashboard"],
+)
+async def recent_logs(
+    limit: int = 100,
+    run_id: Optional[str] = None,
+) -> JSONResponse:
+    """Return recent SecureFix log events for the dashboard. Optional run_id filter."""
+    events = get_recent_logs(limit=min(limit, 200), run_id=run_id)
+    # If buffer is empty, return a placeholder so the dashboard isn't blank
+    if not events:
+        events = [
+            {
+                "event": "dashboard_info",
+                "message": "No activity yet. Push to your repo, open an issue, or run: python scripts/test_issue_webhook.py — then events will appear here.",
+                "timestamp": None,
+                "level": "info",
+            }
+        ]
+    return JSONResponse(content=events)
+
+
+_DASHBOARD_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dashboard.html"
+
+
+@app.get(
+    "/dashboard",
+    summary="Dashboard (live activity)",
+    tags=["Dashboard"],
+    include_in_schema=False,
+)
+async def dashboard() -> FileResponse:
+    """Serve the dashboard UI: live activity log and run summary."""
+    if not _DASHBOARD_PATH.exists():
+        raise HTTPException(status_code=404, detail="Dashboard not found")
+    return FileResponse(_DASHBOARD_PATH, media_type="text/html")

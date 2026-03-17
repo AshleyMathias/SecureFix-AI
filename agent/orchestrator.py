@@ -75,9 +75,19 @@ class SecureFixOrchestrator:
     async def detect_vulnerabilities(self, state: SecureFixState) -> Dict[str, Any]:
         """Run all enabled scanners and return the discovered vulnerabilities."""
         run_id = state["run_id"]
-        local_path = state.get("local_repo_path", "")
+        local_path = state.get("local_repo_path") or ""
 
         logger.info("node_detect", run_id=run_id)
+
+        if not local_path:
+            logger.error("detect_skipped_no_repo_path", run_id=run_id)
+            return {
+                "should_abort": True,
+                "error_message": "Repository was not cloned; cannot scan. Check that repo_url is a valid https://github.com/... URL.",
+                "status": "failed",
+                "vulnerabilities": [],
+                "current_node": "detect_vulnerabilities",
+            }
 
         scanner = VulnerabilityService(local_path, run_id)
 

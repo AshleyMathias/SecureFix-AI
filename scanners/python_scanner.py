@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 from typing import List, Optional
 
@@ -86,10 +87,18 @@ class PythonScanner:
     async def _run_pip_audit(self, dep_file: Path) -> List[Vulnerability]:
         logger.info("pip_audit_starting", dep_file=str(dep_file))
 
+        # Use current Python and -m pip_audit so it works when pip-audit isn't on PATH (e.g. Windows)
+        req_path = dep_file.resolve().as_posix()
+        # --no-deps required with --disable-pip for plain (non-hashed) requirements files
         args = [
-            "pip-audit",
-            "--format", "json",
-            "--requirement", str(dep_file),
+            sys.executable,
+            "-m",
+            "pip_audit",
+            "--format",
+            "json",
+            "--requirement",
+            req_path,
+            "--no-deps",
             "--disable-pip",
         ]
 
@@ -99,14 +108,15 @@ class PythonScanner:
             timeout=180,
         )
 
-        if not result.stdout.strip():
-            # pip-audit exits non-zero when vulnerabilities found; stdout may be in stderr
-            raw = result.stderr if result.stderr.strip().startswith("[") else result.stdout
-            if not raw.strip():
-                logger.warning("pip_audit_empty_output", stderr=result.stderr[:300])
-                return []
-        else:
-            raw = result.stdout
+        # pip-audit exits 1 when vulns are found; JSON can be on stdout or (on some setups) stderr
+        raw = result.stdout.strip()
+        if not raw and result.stderr.strip():
+            se = result.stderr.strip()
+            if se.startswith("{") or se.startswith("["):
+                raw = se
+        if not raw:
+            logger.warning("pip_audit_empty_output", stderr=result.stderr[:300])
+            return []
 
         try:
             data = json.loads(raw)
@@ -154,24 +164,31 @@ class PythonScanner:
     async def _run_safety(self, dep_file: Path) -> List[Vulnerability]:
         logger.info("safety_scan_starting", dep_file=str(dep_file))
 
-        result = await run_command_async(
-            ["safety", "check", "--file", str(dep_file), "--json"],
-            cwd=str(self._repo_path),
-            timeout=120,
-        )
+        cwd = str(self._repo_path)
+        file_path = dep_file.resolve().as_posix()
 
-        raw = result.stdout.strip()
+        # Use "safety check --file ... --json" (2.x style). Safety 3.x "safety scan" often
+        # times out or requires auth; check is fast and works when available.
+        result = await run_command_async(
+            ["safety", "check", "--file", file_path, "--json"],
+            cwd=cwd,
+            timeout=60,
+        )
+        raw = result.stdout.strip() or result.stderr.strip()
         if not raw:
             return []
+        data = self._parse_safety_json(raw)
+        if data is not None:
+            return self._parse_safety_output(data, str(dep_file))
+        return []
 
-        # Safety wraps output differently across versions
+    def _parse_safety_json(self, raw: str) -> list | dict | None:
+        if not raw:
+            return None
         try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            logger.warning("safety_parse_error", error=str(exc))
-            return []
-
-        return self._parse_safety_output(data, str(dep_file))
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return None
 
     def _parse_safety_output(self, data: list | dict, dep_file: str) -> List[Vulnerability]:
         vulns: List[Vulnerability] = []

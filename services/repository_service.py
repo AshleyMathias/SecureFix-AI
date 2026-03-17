@@ -67,9 +67,15 @@ class RepositoryService:
         """
         _validate_github_url(repo_url)
 
-        # Inject token into HTTPS URL for authenticated clone
+        # Inject token into HTTPS URL for authenticated clone.
+        # Fine-grained PATs (github_pat_*) need "oauth2:" prefix; classic (ghp_*) use token as-is.
         parsed = urlparse(repo_url)
-        auth_url = f"https://{self._token}@{parsed.hostname}{parsed.path}"
+        token = (self._token or "").strip()
+        if token.startswith("github_pat_"):
+            auth = f"oauth2:{token}"
+        else:
+            auth = token
+        auth_url = f"https://{auth}@{parsed.hostname}{parsed.path}" if auth else f"https://{parsed.hostname}{parsed.path}"
 
         repo_name = Path(parsed.path).stem
         clone_dir = self._base_dir / f"{repo_name}_{run_id}"
