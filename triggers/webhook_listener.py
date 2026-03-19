@@ -16,7 +16,8 @@ if sys.platform == "win32":
 from pathlib import Path
 
 from fastapi import BackgroundTasks, FastAPI, Header, HTTPException, Request, status
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from services.repository_service import _validate_github_url
@@ -58,6 +59,24 @@ app = FastAPI(
     docs_url="/docs" if not settings.is_production else None,
     redoc_url="/redoc" if not settings.is_production else None,
     lifespan=lifespan,
+)
+
+# CORS: allow frontend (GitHub Pages + local dev) to call this API
+_cors_origins = [
+    "https://ashleymathias.github.io",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:8080",
+    "http://127.0.0.1:8080",
+]
+if settings.environment != "production":
+    _cors_origins.append("http://localhost:5500")  # VS Code Live Server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
 )
 
 # ── Shared workflow instance ───────────────────────────────────────────────────
@@ -336,7 +355,7 @@ async def root() -> JSONResponse:
             "name": "SecureFix AI",
             "version": settings.app_version,
             "docs": "/docs",
-            "dashboard": "/dashboard",
+            "dashboard_url": "http://localhost:3000/dashboard.html",
         }
     )
 
@@ -363,19 +382,3 @@ async def recent_logs(
             }
         ]
     return JSONResponse(content=events)
-
-
-_DASHBOARD_PATH = Path(__file__).resolve().parent.parent / "frontend" / "dashboard.html"
-
-
-@app.get(
-    "/dashboard",
-    summary="Dashboard (live activity)",
-    tags=["Dashboard"],
-    include_in_schema=False,
-)
-async def dashboard() -> FileResponse:
-    """Serve the dashboard UI: live activity log and run summary."""
-    if not _DASHBOARD_PATH.exists():
-        raise HTTPException(status_code=404, detail="Dashboard not found")
-    return FileResponse(_DASHBOARD_PATH, media_type="text/html")

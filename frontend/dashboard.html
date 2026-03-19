@@ -186,7 +186,21 @@
   </div>
 
   <script>
-    const API_BASE = ''; // same origin
+    // Railway backend URL (set after first deploy, then redeploy frontend)
+    const RAILWAY_API = 'https://securefix-ai-production.up.railway.app';
+
+    (function () {
+      const params = new URLSearchParams(location.search);
+      let base = (params.get('api') || '').replace(/\/$/, '');
+      if (!base) {
+        if (location.hostname.endsWith('.github.io'))
+          base = RAILWAY_API;
+        else if (location.port === '3000' || location.port === '8080')
+          base = location.protocol + '//' + location.hostname + ':8000';
+      }
+      window.API_BASE = base;
+    })();
+    const API_BASE = window.API_BASE || '';
     const POLL_MS = 2500;
 
     function el(id) { return document.getElementById(id); }
@@ -272,11 +286,19 @@
 
     function renderSummary(events) {
       const summary = el('summary');
-      const real = events.filter(e => e.event !== 'dashboard_info');
+      if (!summary) return;
+      if (!Array.isArray(events)) events = [];
+      const real = events.filter(e => e && e.event !== 'dashboard_info');
       const runs = new Set(real.map(e => e.run_id_short || (e.run_id || '').slice(0, 8)).filter(Boolean));
-      const completed = real.filter(e => e.event === 'agent_run_complete' && e.status === 'completed').length;
-      const aborted = real.filter(e => e.event === 'agent_run_complete' && e.status === 'aborted').length;
-      const withPr = real.filter(e => e.pr_url).length;
+      // Count completed/aborted from both agent_run_complete and workflow_completed (backend emits both)
+      const completed = real.filter(e =>
+        (e.event === 'agent_run_complete' || e.event === 'workflow_completed') && e.status === 'completed'
+      ).length;
+      const aborted = real.filter(e =>
+        (e.event === 'agent_run_complete' || e.event === 'workflow_completed') && e.status === 'aborted'
+      ).length;
+      const prUrls = new Set(real.filter(e => e.pr_url).map(e => e.pr_url));
+      const withPr = prUrls.size;
       summary.innerHTML = `
         <div class="stat"><div class="stat-label">Runs</div><div class="stat-value">${runs.size}</div></div>
         <div class="stat"><div class="stat-label">Completed</div><div class="stat-value">${completed}</div></div>

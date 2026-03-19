@@ -44,3 +44,6 @@ Thumbs.db
 
 # Docker
 docker/secrets/
+
+# Example repo (separate GitHub repository)
+_example_securefix_repo/
