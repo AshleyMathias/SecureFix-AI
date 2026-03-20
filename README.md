@@ -1,205 +1,279 @@
-# SecureFix AI
-
-**Autonomous DevSecOps agent that monitors GitHub repositories for dependency vulnerabilities and automatically generates secure patches.**
-
-SecureFix AI operates entirely through GitHub workflows and backend services — no frontend UI. It detects vulnerabilities, reasons about safe fixes using an LLM, upgrades dependencies, runs tests, and creates pull requests with detailed explanations.
-
----
-
-## Architecture Diagram
-
-```
-GitHub Event (push / schedule / vulnerability_alert)
-         │
-         ▼
-┌─────────────────────────────┐
-│  Webhook Listener (FastAPI) │  POST /github/webhook
-│  triggers.webhook_listener  │  POST /scan (manual)
-└─────────────┬───────────────┘
-              │
-              ▼
-┌─────────────────────────────────────────────────────────┐
-│         SecureFix Orchestrator (LangGraph)              │
-│                                                         │
-│  ┌──────────┐   ┌──────────┐   ┌──────────────────┐   │
-│  │Initialize│──▶│ Detect   │──▶│   AI Reasoning   │   │
-│  │          │   │Vulns     │   │  (LLM Analysis)  │   │
-│  └──────────┘   └──────────┘   └────────┬─────────┘   │
-│                                          │              │
-│  ┌──────────┐   ┌──────────┐   ┌────────▼─────────┐   │
-│  │Create PR │◀──│Run Tests │◀──│ Apply Patch      │   │
-│  │(GitHub)  │   │(npm/pytest│   │ (Git branch+commit│  │
-│  └──────────┘   └──────────┘   └──────────────────┘   │
-└─────────────────────────────────────────────────────────┘
-              │
-              ▼
-    GitHub Pull Request
-    with full vulnerability
-    explanation + test results
-```
+<p align="center">
+  <h1 align="center">SecureFix AI</h1>
+  <p align="center">
+    <strong>Autonomous DevSecOps agent that detects dependency vulnerabilities and ships secure patches — automatically.</strong>
+  </p>
+  <p align="center">
+    <a href="https://ashleymathias.github.io/SecureFix-AI/dashboard.html">Live Dashboard</a> &nbsp;·&nbsp;
+    <a href="https://securefix-ai-production.up.railway.app/docs">API Docs</a> &nbsp;·&nbsp;
+    <a href="https://securefix-ai-production.up.railway.app/health">Health Check</a>
+  </p>
+</p>
 
 ---
 
-## LangGraph Workflow
+## What is SecureFix AI?
+
+SecureFix AI is an **end-to-end autonomous security agent** that plugs into your GitHub workflow. When you push code or open an issue, it:
+
+1. **Detects** known vulnerabilities in your dependencies (Python & Node.js)
+2. **Reasons** about safe upgrade paths using an LLM (GPT-4o / Claude)
+3. **Patches** dependency files on a dedicated branch
+4. **Tests** the patched code automatically
+5. **Opens a Pull Request** with a full vulnerability report, AI reasoning, and test results
+
+No human intervention needed between push and PR. The entire pipeline — clone, scan, reason, patch, test, PR — runs in under 60 seconds.
+
+---
+
+## Key Features
+
+| Feature | Description |
+|---|---|
+| **Multi-Scanner Engine** | pip-audit, safety, npm audit, and OSV API run in parallel to maximize coverage |
+| **LLM-Powered Reasoning** | GPT-4o or Claude analyzes vulnerabilities, evaluates breaking-change risk, and picks the minimal safe version |
+| **LangGraph Orchestrator** | Stateful, node-based workflow graph with conditional routing (abort on failure, skip if no vulns) |
+| **Webhook-Driven** | Listens for GitHub `push` and `issues` (opened) events — zero polling |
+| **Auto Pull Requests** | Creates labeled, detailed PRs with severity tables, AI reasoning, and test results |
+| **Live Dashboard** | Real-time activity feed and run summary, deployed on GitHub Pages |
+| **Dual Deployment** | Backend on Railway, frontend on GitHub Pages — fully separated concerns |
+| **Security Hardened** | HMAC webhook verification, subprocess sandboxing, SSRF protection, non-root Docker |
+
+---
+
+## Live Demo
+
+| Component | URL |
+|---|---|
+| **Dashboard** | [ashleymathias.github.io/SecureFix-AI](https://ashleymathias.github.io/SecureFix-AI/dashboard.html) |
+| **Backend API** | [securefix-ai-production.up.railway.app](https://securefix-ai-production.up.railway.app/) |
+| **Swagger Docs** | [/docs](https://securefix-ai-production.up.railway.app/docs) |
+| **Source Code** | [github.com/AshleyMathias/SecureFix-AI](https://github.com/AshleyMathias/SecureFix-AI) |
+
+---
+
+## How It Works
 
 ```
-[initialize]
-    │
-    ▼
-[detect_vulnerabilities]
-    │ vulnerabilities found         │ none found / all unpatchable
-    ▼                               ▼
-[ai_reasoning]                  [complete]
-    │
-    ▼
-[update_dependencies]
-    │
-    ▼
-[apply_patch]
-    │ success                   │ failure
-    ▼                           ▼
-[run_tests]                  [abort]
-    │ passed                    │ failed + abort_on_failure=true
-    ▼                           ▼
-[create_pull_request]        [abort]
-    │
-    ▼
-[complete]
+ ┌──────────────────────────────────────────────────────────────────┐
+ │                        TRIGGER                                   │
+ │   GitHub Push  ───┐                                              │
+ │   Issue Opened ───┤──▶  POST /github/webhook                    │
+ │   Manual /scan ───┘     (HMAC-SHA256 verified)                   │
+ └──────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+ ┌──────────────────────────────────────────────────────────────────┐
+ │              SECUREFIX ORCHESTRATOR (LangGraph)                  │
+ │                                                                  │
+ │   ┌────────────┐    ┌─────────────────┐    ┌────────────────┐   │
+ │   │ Initialize │───▶│ Detect Vulns    │───▶│ AI Reasoning   │   │
+ │   │ Clone repo │    │ pip-audit       │    │ GPT-4o/Claude  │   │
+ │   │ Create ID  │    │ safety + npm    │    │ safe versions  │   │
+ │   └────────────┘    │ OSV API         │    │ risk analysis  │   │
+ │                     └─────────────────┘    └───────┬────────┘   │
+ │                                                    │             │
+ │   ┌────────────┐    ┌─────────────────┐    ┌───────▼────────┐   │
+ │   │ Create PR  │◀───│ Run Tests       │◀───│ Apply Patch    │   │
+ │   │ Labels +   │    │ pytest / npm    │    │ Branch, commit │   │
+ │   │ AI summary │    │ test validation │    │ push to remote │   │
+ │   └────────────┘    └─────────────────┘    └────────────────┘   │
+ └──────────────────────────────┬───────────────────────────────────┘
+                                │
+                                ▼
+                   GitHub Pull Request
+                   ┌─────────────────────────────┐
+                   │ Severity table               │
+                   │ AI reasoning + risk analysis │
+                   │ Test results                 │
+                   │ Labels: security, automated  │
+                   └─────────────────────────────┘
+```
+
+### LangGraph State Machine
+
+```
+[initialize] ──▶ [detect_vulnerabilities]
+                        │
+            ┌───────────┴───────────┐
+            │ vulns found           │ none / unpatchable
+            ▼                       ▼
+      [ai_reasoning]           [complete] ✓
+            │
+            ▼
+   [update_dependencies]
+            │
+            ▼
+      [apply_patch]
+            │
+      ┌─────┴──────┐
+      │ success     │ failure
+      ▼             ▼
+   [run_tests]   [abort] ✗
+      │
+   ┌──┴───┐
+   │pass  │fail + abort_on_failure
+   ▼      ▼
+[create_pr] [abort] ✗
+   │
+   ▼
+[complete] ✓
 ```
 
 ---
 
-## Repository Structure
+## Tech Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| **Orchestration** | LangGraph + LangChain Core | Stateful multi-step workflow with conditional routing |
+| **LLM** | OpenAI GPT-4o / Anthropic Claude | Vulnerability reasoning, safe version selection, PR descriptions |
+| **Web Framework** | FastAPI + Uvicorn | Async webhook receiver, REST API, health checks |
+| **GitHub** | PyGithub + GitPython | Clone, branch, commit, push, PR creation, labels |
+| **Scanners** | pip-audit, safety, npm audit, OSV API | Multi-source vulnerability detection |
+| **Frontend** | Vanilla HTML/CSS/JS | Live dashboard polling backend API |
+| **Logging** | structlog (JSON) | Structured events with in-memory ring buffer for dashboard |
+| **Config** | Pydantic Settings + python-dotenv | Type-safe env var management |
+| **Deployment** | Railway (backend) + GitHub Pages (frontend) | Production hosting with auto-deploy |
+| **CI/CD** | GitHub Actions | Tests, scans, Docker build, Pages deployment |
+| **Security** | HMAC-SHA256, subprocess sandbox, SSRF checks | Defense in depth |
+
+---
+
+## Project Structure
 
 ```
 securefix-ai/
 │
-├── agent/
-│   ├── orchestrator.py        # LangGraph node implementations
-│   ├── securefix_agent.py     # High-level agent entry point
-│   ├── graph_builder.py       # LangGraph graph construction + routing
-│   └── state.py               # SecureFixState TypedDict
+├── agent/                          # LangGraph orchestration layer
+│   ├── orchestrator.py             #   Node implementations (8 nodes)
+│   ├── securefix_agent.py          #   High-level agent entry point
+│   ├── graph_builder.py            #   Graph construction + routing logic
+│   └── state.py                    #   SecureFixState TypedDict
 │
-├── llm/
-│   ├── llm_interface.py       # BaseLLMProvider ABC
-│   ├── openai_provider.py     # OpenAI ChatCompletion implementation
-│   ├── anthropic_provider.py  # Anthropic Claude implementation
-│   └── prompts.py             # Prompt library (vulnerability, patch, PR)
+├── llm/                            # LLM provider abstraction
+│   ├── llm_interface.py            #   BaseLLMProvider ABC
+│   ├── openai_provider.py          #   OpenAI GPT-4o implementation
+│   ├── anthropic_provider.py       #   Anthropic Claude implementation
+│   └── prompts.py                  #   Prompt templates (vuln analysis, PR)
 │
-├── services/
-│   ├── github_service.py      # PyGithub wrapper (PR, labels, comments)
-│   ├── vulnerability_service.py  # Scanner orchestration + deduplication
-│   ├── dependency_service.py  # Dependency file read/write
-│   ├── patch_service.py       # Git branch + commit + push
-│   ├── test_service.py        # npm test / pytest execution
-│   └── repository_service.py  # Clone, branch, commit, push, cleanup
+├── services/                       # Domain services
+│   ├── vulnerability_service.py    #   Scanner orchestration + dedup
+│   ├── github_service.py           #   PyGithub wrapper (PR, labels)
+│   ├── dependency_service.py       #   Dependency file read/write
+│   ├── patch_service.py            #   Git branch + commit + push
+│   ├── test_service.py             #   Test runner (npm/pytest)
+│   └── repository_service.py       #   Clone, validate, cleanup
 │
-├── scanners/
-│   ├── npm_scanner.py         # npm audit (v6 + v7 output formats)
-│   ├── python_scanner.py      # pip-audit + safety
-│   └── osv_scanner.py         # OSV API (google.github.io/osv.dev)
+├── scanners/                       # Vulnerability scanners
+│   ├── python_scanner.py           #   pip-audit + safety
+│   ├── npm_scanner.py              #   npm audit (v6 + v7 formats)
+│   └── osv_scanner.py              #   OSV API enrichment
 │
-├── workflows/
-│   └── vulnerability_fix_flow.py  # High-level flow facade + batch support
+├── models/                         # Pydantic data models
+│   ├── vulnerability.py            #   Vulnerability, Severity, Source
+│   ├── dependency.py               #   Dependency, Ecosystem, File
+│   ├── patch_result.py             #   PatchResult, TestResult, Status
+│   └── workflow_state.py           #   WorkflowState, WorkflowStatus
 │
-├── triggers/
-│   └── webhook_listener.py    # FastAPI server (webhook + manual scan endpoints)
+├── triggers/                       # API layer
+│   └── webhook_listener.py         #   FastAPI app (webhook, scan, logs)
 │
-├── models/
-│   ├── vulnerability.py       # Vulnerability Pydantic model
-│   ├── dependency.py          # Dependency Pydantic model
-│   ├── patch_result.py        # PatchResult + TestResult models
-│   └── workflow_state.py      # WorkflowState Pydantic model
+├── workflows/                      # Flow facades
+│   └── vulnerability_fix_flow.py   #   VulnerabilityFixFlow + batch
 │
-├── utils/
-│   ├── config.py              # Pydantic Settings (all env vars)
-│   ├── logger.py              # structlog + EventLogger
-│   └── shell.py               # Sandboxed subprocess with allow-list
+├── utils/                          # Cross-cutting concerns
+│   ├── config.py                   #   Pydantic Settings (all env vars)
+│   ├── logger.py                   #   structlog + EventLogger + templates
+│   ├── log_buffer.py               #   In-memory ring buffer for dashboard
+│   └── shell.py                    #   Sandboxed subprocess (allow-list)
 │
-├── scripts/
-│   └── run_local_demo.py      # Offline demo (no GitHub token required)
+├── frontend/                       # Dashboard (GitHub Pages)
+│   ├── dashboard.html              #   Live activity feed + run summary
+│   └── index.html                  #   Redirect to dashboard
 │
-├── docker/
-│   ├── Dockerfile             # Multi-stage Python 3.11 image
+├── scripts/                        # Developer tools
+│   ├── run_local_demo.py           #   Offline demo (no GitHub needed)
+│   ├── serve_frontend.py           #   Local static server (port 3000)
+│   ├── test_example_repo.py        #   Trigger scan on example repo
+│   └── test_issue_webhook.py       #   Simulate issues webhook
+│
+├── docker/                         # Container deployment
+│   ├── Dockerfile                  #   Multi-stage Python 3.11 image
 │   └── docker-compose.yml
 │
-├── tests/
+├── tests/                          # Test suite
+│   ├── test_agent.py
 │   ├── test_scanners.py
-│   ├── test_services.py
-│   └── test_agent.py
+│   └── test_services.py
 │
 ├── .github/workflows/
-│   └── securefix.yml          # GitHub Actions CI/CD workflow
+│   ├── securefix.yml               #   CI: tests + vuln scan + Docker
+│   └── deploy-pages.yml            #   CD: deploy frontend to Pages
 │
-├── .env.example
-├── .gitignore
-├── requirements.txt
-└── README.md
+├── Procfile                        # Railway start command
+├── railway.toml                    # Railway build + deploy config
+├── runtime.txt                     # Python 3.11.9
+├── requirements.txt                # Python dependencies
+├── .env.example                    # Environment variable template
+└── LICENSE
 ```
 
 ---
 
-## Core Technology Stack
-
-| Category | Technology |
-|---|---|
-| Language | Python 3.11+ |
-| AI Orchestration | LangGraph + LangChain Core |
-| LLM Providers | OpenAI GPT-4o / Anthropic Claude |
-| Web Framework | FastAPI + Uvicorn |
-| GitHub Integration | PyGithub + GitPython |
-| Security Scanners | npm audit, pip-audit, safety, OSV API |
-| Async HTTP | httpx + asyncio |
-| Configuration | Pydantic Settings |
-| Logging | structlog (JSON) |
-| Infrastructure | Docker + GitHub Actions |
-
----
-
-## Local Setup
+## Quick Start
 
 ### Prerequisites
 
 - Python 3.11+
-- Node.js 20+ (for npm audit)
 - Git
+- A GitHub Personal Access Token (with `repo` + `pull_requests` scopes)
+- An OpenAI API key (or Anthropic key)
 
 ### Installation
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-org/securefix-ai.git
-cd securefix-ai
+# Clone
+git clone https://github.com/AshleyMathias/SecureFix-AI.git
+cd SecureFix-AI
 
-# 2. Create a virtual environment
+# Virtual environment
 python -m venv .venv
-source .venv/bin/activate        # Linux/macOS
 .venv\Scripts\activate           # Windows
+# source .venv/bin/activate      # Linux/macOS
 
-# 3. Install dependencies
+# Dependencies
 pip install -r requirements.txt
 
-# 4. Install security scanners
-pip install pip-audit safety
-
-# 5. Configure environment
+# Configuration
 cp .env.example .env
-# Edit .env with your GITHUB_TOKEN, OPENAI_API_KEY, etc.
+# Edit .env → add GITHUB_TOKEN, OPENAI_API_KEY, GITHUB_WEBHOOK_SECRET
 ```
 
-### Run the webhook server
+### Run the Backend
 
 ```bash
-python -m uvicorn triggers.webhook_listener:app --host 0.0.0.0 --port 8000 --reload
+uvicorn triggers.webhook_listener:app --host 0.0.0.0 --port 8000 --reload
 ```
 
-The API will be available at:
-- `http://localhost:8000/health` — health check
-- `http://localhost:8000/docs` — Swagger UI (development only)
-- `POST http://localhost:8000/github/webhook` — GitHub webhook receiver
-- `POST http://localhost:8000/scan` — manual scan trigger
+**Endpoints:**
 
-### Run tests
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | Health check |
+| `/docs` | GET | Swagger UI (dev only) |
+| `/github/webhook` | POST | GitHub webhook receiver |
+| `/scan` | POST | Manual scan trigger |
+| `/api/recent-logs` | GET | Dashboard log feed |
+
+### Run the Frontend (Local)
+
+```bash
+python scripts/serve_frontend.py
+# Open http://localhost:3000/dashboard.html
+```
+
+### Run Tests
 
 ```bash
 pytest tests/ -v
@@ -207,185 +281,148 @@ pytest tests/ -v
 
 ---
 
+## Deployment
+
+### Backend → Railway
+
+The backend auto-deploys to [Railway](https://railway.app) on every push to `main`.
+
+| File | Purpose |
+|---|---|
+| `Procfile` | `web: uvicorn triggers.webhook_listener:app --host 0.0.0.0 --port $PORT` |
+| `railway.toml` | Build config, health check path, restart policy |
+| `runtime.txt` | Python version pinning |
+
+**Required Railway environment variables:**
+
+| Variable | Description |
+|---|---|
+| `GITHUB_TOKEN` | PAT with repo + PR scopes |
+| `GITHUB_WEBHOOK_SECRET` | Webhook HMAC secret |
+| `OPENAI_API_KEY` | OpenAI API key |
+| `LLM_PROVIDER` | `openai` or `anthropic` |
+| `ENVIRONMENT` | `development` or `production` |
+
+### Frontend → GitHub Pages
+
+The `frontend/` directory deploys automatically via `.github/workflows/deploy-pages.yml` whenever files in `frontend/` change on `main`.
+
+**Dashboard URL:** [ashleymathias.github.io/SecureFix-AI](https://ashleymathias.github.io/SecureFix-AI/dashboard.html)
+
+---
+
+## Webhook Setup
+
+To connect a repository to SecureFix AI:
+
+1. Go to **repo → Settings → Webhooks → Add webhook**
+2. **Payload URL:** `https://securefix-ai-production.up.railway.app/github/webhook`
+3. **Content type:** `application/json`
+4. **Secret:** same as `GITHUB_WEBHOOK_SECRET`
+5. **Events:** select `Pushes` and `Issues`
+
+Now every push triggers a vulnerability scan, and every new issue triggers an analysis.
+
+---
+
+## Example PR Output
+
+When SecureFix AI detects a vulnerability, it opens a PR like this:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Security Patch: Fix vulnerability in lodash                 │
+│  Branch: securefix/lodash-high-20240116-a1b2c3d4            │
+│  Labels: security, automated, securefix-ai                   │
+├─────────────────────────────────────────────────────────────┤
+│                                                              │
+│  ## Executive Summary                                        │
+│  Resolves a HIGH severity prototype pollution vulnerability  │
+│  (CVE-2021-23337) in lodash.                                 │
+│                                                              │
+│  ## Vulnerabilities Fixed                                    │
+│  ┌──────────────────┬─────────┬──────┬────────┬────────┐    │
+│  │ ID               │ Package │ Sev  │ Before │ After  │    │
+│  ├──────────────────┼─────────┼──────┼────────┼────────┤    │
+│  │ GHSA-35jh-r3h4   │ lodash  │ HIGH │ 4.17.15│ 4.17.21│    │
+│  └──────────────────┴─────────┴──────┴────────┴────────┘    │
+│                                                              │
+│  ## AI Reasoning                                             │
+│  4.17.21 is the minimal safe version. Patch-level upgrade,   │
+│  no breaking changes. lodash follows strict semver.          │
+│                                                              │
+│  ## Test Results                                             │
+│  ✅ npm test — passed (3.2s)                                 │
+│                                                              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+---
+
 ## Local Demo (No GitHub Token Required)
 
-Run the offline demo to see SecureFix AI in action with simulated vulnerabilities:
+Try SecureFix AI without any external services:
 
 ```bash
-# With LLM calls (requires OPENAI_API_KEY)
+# With LLM calls
 python scripts/run_local_demo.py
 
-# Without LLM calls (fully offline)
+# Fully offline (simulated LLM)
 DEMO_SKIP_LLM=1 python scripts/run_local_demo.py
 ```
 
-**Demo scenario:**
-- Creates a temporary repo with `lodash 4.17.15`, `axios 0.21.1`, `Pillow 8.2.0`
-- Detects 3 vulnerabilities (CVE-2021-23337, CVE-2021-3749, CVE-2022-22815)
-- Calls LLM to reason about safe upgrade versions
-- Applies patches to `package.json` and `requirements.txt`
-- Prints a full PR description preview
-
-**Expected output:**
-```
-══════════════════════════════════════════════════════════════════════
-  SecureFix AI — Local Demo
-══════════════════════════════════════════════════════════════════════
-
-  SCAN RESULTS
-  ────────────────────────────────────────────────────────────
-  [HIGH    ] lodash          4.17.15    — GHSA-35jh-r3h4-6jhm
-             CVE-2021-23337  CVSS: 7.2
-             Fix:  4.17.21
-
-  [MODERATE] axios           0.21.1     — GHSA-cph5-m8f7-6c5x
-             CVE-2021-3749   CVSS: 5.9
-             Fix:  1.6.0
-
-  [HIGH    ] Pillow          8.2.0      — GHSA-xvch-5gv4-984h
-             CVE-2022-22815  CVSS: 7.5
-             Fix:  9.0.0
-```
+Creates a temp repo with vulnerable `lodash 4.17.15`, `axios 0.21.1`, and `Pillow 8.2.0`, then runs the full scan → reason → patch pipeline.
 
 ---
 
-## GitHub Webhook Configuration
+## Security Design
 
-1. Go to your repository **Settings → Webhooks → Add webhook**
-2. Set **Payload URL** to `https://your-domain.com/github/webhook`
-3. Set **Content type** to `application/json`
-4. Set **Secret** to the value of `GITHUB_WEBHOOK_SECRET` in your `.env`
-5. Select events:
-   - `Push`
-   - `Pull requests`
-   - `Repository vulnerability alerts`
-   - `Workflow runs`
-
----
-
-## Docker Deployment
-
-```bash
-# Build and run with Docker Compose
-cd docker
-docker-compose up -d
-
-# Or build manually
-docker build -f docker/Dockerfile -t securefix-ai:latest .
-docker run -d \
-  -p 8000:8000 \
-  -e GITHUB_TOKEN=ghp_... \
-  -e OPENAI_API_KEY=sk-... \
-  securefix-ai:latest
-```
-
----
-
-## GitHub Actions Integration
-
-The included `.github/workflows/securefix.yml` workflow:
-- Runs unit tests on every push and pull request
-- Executes a full vulnerability scan on pushes to `main`
-- Supports manual dispatch with a custom `repo_url`
-- Runs on a daily schedule (02:00 UTC)
-- Builds and verifies the Docker image on main branch pushes
-
-Required secrets in your GitHub repository:
-- `GITHUB_TOKEN` — automatically provided by GitHub Actions
-- `OPENAI_API_KEY` — your OpenAI API key
-- `ANTHROPIC_API_KEY` — optional, for Claude provider
-- `GITHUB_WEBHOOK_SECRET` — optional, for webhook validation
-
----
-
-## Switching LLM Providers
-
-No code changes required. Set a single environment variable:
-
-```bash
-# Use OpenAI (default)
-LLM_PROVIDER=openai
-
-# Switch to Anthropic Claude
-LLM_PROVIDER=anthropic
-ANTHROPIC_API_KEY=sk-ant-...
-```
-
-The `get_llm_provider()` factory in `llm/__init__.py` handles routing automatically.
-
----
-
-## Example Pull Request Output
-
-```
-Title: Security Patch: Fix vulnerability in lodash (GHSA-35jh-r3h4-6jhm)
-Branch: securefix/lodash-high-20240116-a1b2c3d4
-Labels: security, automated, securefix-ai
-
-## Security Patch — Generated by SecureFix AI
-
-### Executive Summary
-This PR resolves a **High severity** prototype pollution vulnerability
-(CVE-2021-23337) in `lodash`. Versions prior to 4.17.21 allow command
-injection via crafted template strings.
-
-### Vulnerabilities Fixed
-
-| ID                   | Package | Severity | Before   | After    | CVSS |
-|----------------------|---------|----------|----------|----------|------|
-| GHSA-35jh-r3h4-6jhm  | lodash  | HIGH     | 4.17.15  | 4.17.21  | 7.2  |
-
-### Changes Applied
-- `package.json`: `lodash` 4.17.15 → 4.17.21
-
-### Breaking Change Assessment
-This is a **patch-level upgrade** (4.17.x → 4.17.21). No breaking API
-changes. Breaking change risk: **low** (confirmed by AI analysis).
-
-### Test Results
-| Test Suite  | Outcome  | Duration |
-|-------------|----------|----------|
-| npm test    | ✅ passed | 3.2s     |
-
-### AI Reasoning
-Lodash 4.17.21 is the minimal safe version that patches CVE-2021-23337
-without introducing any breaking changes. The lodash project follows
-strict semver, making this upgrade safe for automated application.
-
----
-*Automated by [SecureFix AI](https://github.com/securefix-ai)*
-```
-
----
-
-## Security Considerations
-
-- **Command injection prevention**: All subprocess calls go through `utils/shell.py` which validates against an executable allow-list and rejects shell metacharacters.
-- **Path traversal prevention**: All repository paths are resolved and validated to remain within the configured base directory.
-- **SSRF prevention**: Only `https://github.com` URLs are permitted for repository cloning.
-- **Webhook authentication**: HMAC-SHA256 signature verification via `X-Hub-Signature-256`.
-- **Secrets management**: All credentials via environment variables / `.env`; never hardcoded.
-- **Non-root Docker**: The container runs as a dedicated `securefix` user.
+| Layer | Protection |
+|---|---|
+| **Webhook Auth** | HMAC-SHA256 signature verification (`X-Hub-Signature-256`) |
+| **Subprocess** | Allow-list of permitted executables; shell metacharacter rejection (`utils/shell.py`) |
+| **SSRF** | Only `https://github.com` URLs allowed for cloning |
+| **Path Traversal** | Repository paths resolved and validated within configured base directory |
+| **Secrets** | All credentials via environment variables; `.env` gitignored |
+| **Docker** | Non-root `securefix` user; multi-stage build |
+| **CORS** | Explicit origin allow-list (GitHub Pages + localhost) |
 
 ---
 
 ## Configuration Reference
 
-All configuration is managed via Pydantic Settings. See `.env.example` for the full list with descriptions. Key settings:
+All settings managed via Pydantic Settings. See `.env.example` for the full list.
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `openai` | Active LLM provider |
-| `OPENAI_MODEL` | `gpt-4o` | OpenAI model |
+| `LLM_PROVIDER` | `openai` | `openai` or `anthropic` |
+| `OPENAI_MODEL` | `gpt-4o` | Model for vulnerability reasoning |
 | `GITHUB_TOKEN` | — | **Required.** PAT with repo + PR scopes |
-| `PATCH_BRANCH_PREFIX` | `securefix/` | Branch name prefix |
+| `GITHUB_WEBHOOK_SECRET` | — | HMAC secret for webhook verification |
+| `PATCH_BRANCH_PREFIX` | `securefix/` | Branch name prefix for patches |
 | `ABORT_ON_TEST_FAILURE` | `true` | Cancel PR if tests fail |
-| `SKIP_BREAKING_CHANGES` | `false` | Skip high-risk upgrades |
+| `SKIP_BREAKING_CHANGES` | `false` | Skip major version upgrades |
 | `MAX_VULNERABILITIES_PER_RUN` | `20` | Cap per workflow run |
 | `CLEANUP_AFTER_RUN` | `true` | Delete local clone after run |
 
 ---
 
+## Switching LLM Providers
+
+No code changes needed — just set the environment variable:
+
+```bash
+# OpenAI (default)
+LLM_PROVIDER=openai
+OPENAI_API_KEY=sk-...
+
+# Anthropic Claude
+LLM_PROVIDER=anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+```
+
+---
+
 ## License
 
-MIT License — see `LICENSE` for details.
+MIT License — see [LICENSE](LICENSE) for details.
