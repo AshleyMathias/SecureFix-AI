@@ -61,22 +61,24 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# CORS: allow frontend (GitHub Pages + local dev) to call this API
-_cors_origins = [
+# CORS: allow frontend (GitHub Pages, Railway, local dev) to call this API
+_cors_origins: list[str] = [
     "https://ashleymathias.github.io",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:8080",
     "http://127.0.0.1:8080",
+    "http://localhost:5500",
 ]
-if settings.environment != "production":
-    _cors_origins.append("http://localhost:5500")  # VS Code Live Server
+# Also allow the Railway domain itself (for Swagger UI etc.)
+_cors_origins.append("https://securefix-ai-production.up.railway.app")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["*"],
 )
 
 # ── Shared workflow instance ───────────────────────────────────────────────────
